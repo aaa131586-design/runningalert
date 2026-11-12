@@ -1,0 +1,53 @@
+name: Telegram Test
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Send test message
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+          import urllib.error
+
+          token = os.environ["BOT_TOKEN"].strip()
+          chat_id = os.environ["CHAT_ID"].strip()
+
+          if not token or not chat_id:
+              raise SystemExit("GitHub Secrets 두 개를 확인해 주세요.")
+
+          data = json.dumps({
+              "chat_id": chat_id,
+              "text": "✅ 러닝 알림 봇 연결 성공!"
+          }).encode("utf-8")
+
+          request = urllib.request.Request(
+              f"https://api.telegram.org/bot{token}/sendMessage",
+              data=data,
+              headers={"Content-Type": "application/json"},
+              method="POST"
+          )
+
+          try:
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  result = json.load(response)
+          except urllib.error.HTTPError as error:
+              raise SystemExit(f"전송 실패: HTTP {error.code}")
+          except urllib.error.URLError:
+              raise SystemExit("텔레그램 연결 실패")
+
+          if not result.get("ok"):
+              raise SystemExit("전송 실패")
+          print("테스트 알림 전송 성공")
+          PY
