@@ -1,0 +1,143 @@
+name: Running Alert
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "3-58/5 * * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: running-alert
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare Python
+        run: |
+          python3 -m venv /tmp/running-env
+          /tmp/running-env/bin/pip install beautifulsoup4==4.14.2
+
+      - name: Check new posts
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          /tmp/running-env/bin/python - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.request
+          from pathlib import Path
+          from bs4 import BeautifulSoup
+
+          state = Path("running-state.json")
+          token = os.environ["BOT_TOKEN"].strip()
+          chat = os.environ["CHAT_ID"].strip()
+          keywords = ("omm", "재입고")
+
+          def notify(text):
+              data = json.dumps({
+                  "chat_id": chat,
+                  "text": text,
+                  "link_preview_options": {"is_disabled": True}
+              }).encode("utf-8")
+              req = urllib.request.Request(
+                  f"https://api.telegram.org/bot{token}/sendMessage",
+                  data=data,
+                  headers={"Content-Type": "application/json"}
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      result = json.load(r)
+              except Exception:
+                  raise RuntimeError("Telegram send failed") from None
+              if not result.get("ok"):
+                  raise RuntimeError("Telegram rejected message")
+
+          def get_posts(page):
+              url = (
+                  "https://gall.dcinside.com/mgallery/board/lists/"
+                  f"?id=running&page={page}"
+              )
+              req = urllib.request.Request(
+                  url, headers={"User-Agent": "Mozilla/5.0"}
+              )
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  soup = BeautifulSoup(r.read(), "html.parser")
+              posts = {}
+              for row in soup.select("tr.ub-content"):
+                  number = row.select_one(".gall_num")
+                  link = row.select_one(".gall_tit a")
+                  if number is None or link is None:
+                      continue
+                  value = number.get_text(strip=True)
+                  if not value.isdigit():
+                      continue
+                  posts[int(value)] = link.get_text(" ", strip=True)
+              if not posts:
+                  raise RuntimeError("Cannot read DCInside post list")
+              return posts
+
+          if not token or not chat:
+              raise RuntimeError("Missing GitHub Secrets")
+
+          if not state.exists():
+              posts = get_posts(1)
+              notify(
+                  "✅ 러닝 갤러리 감지 시작!\n"
+                  "지금 이후 새 글 제목에서 omm / 재입고를 찾습니다."
+              )
+              state.write_text(json.dumps({"last": max(posts)}))
+          else:
+              last = int(json.loads(state.read_text())["last"])
+              posts = {}
+              for page in range(1, 11):
+                  batch = get_posts(page)
+                  posts.update(batch)
+                  if min(batch) <= last:
+                      break
+                  time.sleep(2)
+              else:
+                  raise RuntimeError(
+                      "More than 10 pages behind; manual check needed"
+                  )
+
+              cursor = last
+              sent = 0
+              try:
+                  for number in sorted(posts):
+                      if number <= last:
+                          continue
+                      title = posts[number]
+                      if any(word in title.casefold() for word in keywords):
+                          notify(
+                              f"🏃 러닝 갤러리 새 글\n{title[:1000]}\n"
+                              f"https://m.dcinside.com/board/running/{number}"
+                          )
+                          sent += 1
+                          time.sleep(1)
+                      cursor = number
+              finally:
+                  state.write_text(json.dumps({"last": cursor}))
+              print(f"Check complete. Notifications: {sent}")
+          PY
+
+      - name: Save progress
+        if: always()
+        run: |
+          if [ -f running-state.json ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add running-state.json
+            if ! git diff --cached --quiet; then
+              git commit -m "Save running alert progress"
+              git push
+            fi
+          fi
