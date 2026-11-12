@@ -116,7 +116,32 @@ jobs:
                       if number <= last:
                           continue
                       title = posts[number]
-                      if any(word in title.casefold() for word in keywords):
+                      content = title
+
+                      if not any(word in title.casefold() for word in keywords):
+                          url = (
+                              "https://gall.dcinside.com/mgallery/board/view/"
+                              f"?id=running&no={number}"
+                          )
+                          req = urllib.request.Request(
+                              url, headers={"User-Agent": "Mozilla/5.0"}
+                          )
+                          with urllib.request.urlopen(req, timeout=30) as r:
+                              soup = BeautifulSoup(r.read(), "html.parser")
+
+                          body = soup.select_one(".write_div")
+                          if body is None:
+                              raise RuntimeError(
+                                  f"Cannot read post body: {number}"
+                              )
+
+                          for element in body.select("script, style"):
+                              element.decompose()
+
+                          content += "\n" + body.get_text(" ", strip=True)
+                          time.sleep(2)
+
+                      if any(word in content.casefold() for word in keywords):
                           notify(
                               f"🏃 러닝 갤러리 새 글\n{title[:1000]}\n"
                               f"https://m.dcinside.com/board/running/{number}"
